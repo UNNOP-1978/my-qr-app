@@ -1,0 +1,1086 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+
+void main() {
+  runApp(const LifeCheckSleepApp());
+}
+
+const String kAppVersion = 'V0.7.9 Stable UI Fix';
+
+class AppColors {
+  static const navy = Color(0xFF071426);
+  static const navy2 = Color(0xFF0B1B31);
+  static const card = Color(0xFF10233B);
+  static const white = Color(0xFFF7FBFF);
+  static const muted = Color(0xFF8FA2B8);
+  static const line = Color(0xFF223B5F);
+  static const blue = Color(0xFF4DA3FF);
+  static const cyan = Color(0xFF4DDCF0);
+  static const red = Color(0xFFFF4D5E);
+  static const orange = Color(0xFFFFB84D);
+  static const purple = Color(0xFFB77CFF);
+  static const green = Color(0xFF48D597);
+  static const greyEvent = Color(0xFF607086);
+  static const warning = Color(0xFFFFC857);
+}
+
+enum SoundType { background, speech, possibleSnore, unknown, impact }
+
+Color colorForType(SoundType t) {
+  switch (t) {
+    case SoundType.speech:
+      return AppColors.cyan;
+    case SoundType.possibleSnore:
+      return AppColors.red;
+    case SoundType.unknown:
+      return AppColors.orange;
+    case SoundType.impact:
+      return AppColors.purple;
+    case SoundType.background:
+      return AppColors.greyEvent;
+  }
+}
+
+String labelForType(SoundType t) {
+  switch (t) {
+    case SoundType.speech:
+      return 'Speech-like';
+    case SoundType.possibleSnore:
+      return 'Possible snore';
+    case SoundType.unknown:
+      return 'Unknown';
+    case SoundType.impact:
+      return 'Impact';
+    case SoundType.background:
+      return 'Background';
+  }
+}
+
+IconData iconForType(SoundType t) {
+  switch (t) {
+    case SoundType.speech:
+      return Icons.record_voice_over_rounded;
+    case SoundType.possibleSnore:
+      return Icons.graphic_eq_rounded;
+    case SoundType.impact:
+      return Icons.flash_on_rounded;
+    case SoundType.unknown:
+      return Icons.help_outline_rounded;
+    case SoundType.background:
+      return Icons.nights_stay_rounded;
+  }
+}
+
+String soundTypeToJson(SoundType t) {
+  switch (t) {
+    case SoundType.speech:
+      return 'speech';
+    case SoundType.possibleSnore:
+      return 'possible_snore';
+    case SoundType.unknown:
+      return 'unknown';
+    case SoundType.impact:
+      return 'impact';
+    case SoundType.background:
+      return 'background';
+  }
+}
+
+SoundType soundTypeFromJson(dynamic value) {
+  final v = value?.toString() ?? '';
+  if (v == 'speech') return SoundType.speech;
+  if (v == 'possible_snore' || v == 'snore') return SoundType.possibleSnore;
+  if (v == 'unknown') return SoundType.unknown;
+  if (v == 'impact') return SoundType.impact;
+  return SoundType.background;
+}
+
+class JsonTools {
+  static int i(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  static double d(dynamic value) {
+    if (value is double) return value;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0.0;
+  }
+}
+
+class SleepGraphPoint {
+  final int offsetSeconds;
+  final double avgDbfs;
+  final double peakDbfs;
+  final SoundType type;
+
+  const SleepGraphPoint({
+    required this.offsetSeconds,
+    required this.avgDbfs,
+    required this.peakDbfs,
+    required this.type,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'offsetSeconds': offsetSeconds,
+        'avgDbfs': avgDbfs,
+        'peakDbfs': peakDbfs,
+        'type': soundTypeToJson(type),
+      };
+
+  factory SleepGraphPoint.fromJson(Map<String, dynamic> json) {
+    return SleepGraphPoint(
+      offsetSeconds: JsonTools.i(json['offsetSeconds']),
+      avgDbfs: JsonTools.d(json['avgDbfs']),
+      peakDbfs: JsonTools.d(json['peakDbfs']),
+      type: soundTypeFromJson(json['type']),
+    );
+  }
+}
+
+class SleepEventSegment {
+  final int id;
+  final int startSeconds;
+  final int endSeconds;
+  final SoundType type;
+  final double avgDbfs;
+  final double peakDbfs;
+  final String detail;
+
+  const SleepEventSegment({
+    required this.id,
+    required this.startSeconds,
+    required this.endSeconds,
+    required this.type,
+    required this.avgDbfs,
+    required this.peakDbfs,
+    required this.detail,
+  });
+
+  int get durationSeconds => math.max(1, endSeconds - startSeconds);
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'startSeconds': startSeconds,
+        'endSeconds': endSeconds,
+        'type': soundTypeToJson(type),
+        'avgDbfs': avgDbfs,
+        'peakDbfs': peakDbfs,
+        'detail': detail,
+      };
+
+  factory SleepEventSegment.fromJson(Map<String, dynamic> json) {
+    return SleepEventSegment(
+      id: JsonTools.i(json['id']),
+      startSeconds: JsonTools.i(json['startSeconds']),
+      endSeconds: JsonTools.i(json['endSeconds']),
+      type: soundTypeFromJson(json['type']),
+      avgDbfs: JsonTools.d(json['avgDbfs']),
+      peakDbfs: JsonTools.d(json['peakDbfs']),
+      detail: json['detail']?.toString() ?? '',
+    );
+  }
+}
+
+class SleepRecordingSession {
+  final DateTime startedAt;
+  final DateTime endedAt;
+  final int durationSeconds;
+  final int speech;
+  final int possibleSnore;
+  final int impact;
+  final int unknown;
+  final double avgDbfs;
+  final double peakDbfs;
+  final String analysisNote;
+  final List<SleepGraphPoint> graphPoints;
+  final List<SleepEventSegment> segments;
+
+  const SleepRecordingSession({
+    required this.startedAt,
+    required this.endedAt,
+    required this.durationSeconds,
+    required this.speech,
+    required this.possibleSnore,
+    required this.impact,
+    required this.unknown,
+    required this.avgDbfs,
+    required this.peakDbfs,
+    required this.analysisNote,
+    required this.graphPoints,
+    required this.segments,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'startedAt': startedAt.toIso8601String(),
+        'endedAt': endedAt.toIso8601String(),
+        'durationSeconds': durationSeconds,
+        'speech': speech,
+        'possibleSnore': possibleSnore,
+        'impact': impact,
+        'unknown': unknown,
+        'avgDbfs': avgDbfs,
+        'peakDbfs': peakDbfs,
+        'analysisNote': analysisNote,
+        'graphPoints': graphPoints.map((e) => e.toJson()).toList(),
+        'segments': segments.map((e) => e.toJson()).toList(),
+      };
+
+  factory SleepRecordingSession.fromJson(Map<String, dynamic> json) {
+    final gp = json['graphPoints'];
+    final seg = json['segments'];
+    return SleepRecordingSession(
+      startedAt: DateTime.tryParse(json['startedAt']?.toString() ?? '') ?? DateTime.now(),
+      endedAt: DateTime.tryParse(json['endedAt']?.toString() ?? '') ?? DateTime.now(),
+      durationSeconds: JsonTools.i(json['durationSeconds']),
+      speech: JsonTools.i(json['speech']),
+      possibleSnore: JsonTools.i(json['possibleSnore']),
+      impact: JsonTools.i(json['impact']),
+      unknown: JsonTools.i(json['unknown']),
+      avgDbfs: JsonTools.d(json['avgDbfs']),
+      peakDbfs: JsonTools.d(json['peakDbfs']),
+      analysisNote: json['analysisNote']?.toString() ?? '',
+      graphPoints: gp is List ? gp.whereType<Map>().map((e) => SleepGraphPoint.fromJson(e.map((k, v) => MapEntry(k.toString(), v)))).toList() : const [],
+      segments: seg is List ? seg.whereType<Map>().map((e) => SleepEventSegment.fromJson(e.map((k, v) => MapEntry(k.toString(), v)))).toList() : const [],
+    );
+  }
+}
+
+class SleepSessionStore {
+  static const _fileName = 'lifecheck_sleep_sessions_v079.json';
+
+  static Future<File> _file() async {
+    final d = await getApplicationDocumentsDirectory();
+    return File('${d.path}/$_fileName');
+  }
+
+  static Future<SleepRecordingSession?> loadLatest() async {
+    try {
+      final f = await _file();
+      if (!await f.exists()) return null;
+      final raw = await f.readAsString();
+      final decoded = jsonDecode(raw);
+      if (decoded is! List || decoded.isEmpty) return null;
+      return SleepRecordingSession.fromJson(decoded.last.map((k, v) => MapEntry(k.toString(), v)));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> append(SleepRecordingSession session) async {
+    final f = await _file();
+    List<dynamic> decoded = [];
+    if (await f.exists()) {
+      try {
+        final raw = await f.readAsString();
+        final item = jsonDecode(raw);
+        if (item is List) decoded = item;
+      } catch (_) {}
+    }
+    decoded.add(session.toJson());
+    await f.writeAsString(const JsonEncoder.withIndent('  ').convert(decoded), flush: true);
+  }
+}
+
+class WavInfo {
+  final int sampleRate;
+  final int channels;
+  final int bitsPerSample;
+  final int dataStart;
+  final int dataSize;
+  final int bytesPerFrame;
+
+  const WavInfo({
+    required this.sampleRate,
+    required this.channels,
+    required this.bitsPerSample,
+    required this.dataStart,
+    required this.dataSize,
+    required this.bytesPerFrame,
+  });
+}
+
+class AudioAnalysisResult {
+  final double avgDbfs;
+  final double peakDbfs;
+  final String note;
+  final List<SleepGraphPoint> graphPoints;
+  final List<SleepEventSegment> segments;
+
+  const AudioAnalysisResult({
+    required this.avgDbfs,
+    required this.peakDbfs,
+    required this.note,
+    required this.graphPoints,
+    required this.segments,
+  });
+}
+
+class LifeCheckSleepApp extends StatefulWidget {
+  const LifeCheckSleepApp({super.key});
+
+  @override
+  State<LifeCheckSleepApp> createState() => _LifeCheckSleepAppState();
+}
+
+class _LifeCheckSleepAppState extends State<LifeCheckSleepApp> {
+  int _index = 0;
+  int _recordStartToken = 0;
+  SleepRecordingSession? _latest;
+
+  @override
+  void initState() {
+    super.initState();
+    SleepSessionStore.loadLatest().then((s) {
+      if (mounted) setState(() => _latest = s);
+    });
+  }
+
+  void _start() => setState(() {
+        _recordStartToken++;
+        _index = 1;
+      });
+
+  void _saved(SleepRecordingSession s) => setState(() {
+        _latest = s;
+        _index = 2;
+      });
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(useMaterial3: true, brightness: Brightness.dark, scaffoldBackgroundColor: AppColors.navy),
+      home: Scaffold(
+        backgroundColor: AppColors.navy,
+        body: IndexedStack(
+          index: _index,
+          children: [
+            HomeScreen(onStart: _start),
+            RecordingScreen(startToken: _recordStartToken, onSessionSaved: _saved, onViewReport: () => setState(() => _index = 2)),
+            ReportScreen(session: _latest, onRecordAgain: _start),
+            SettingsScreen(onRecordAgain: _start),
+          ],
+        ),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _index,
+          onDestinationSelected: (i) => setState(() => _index = i),
+          destinations: const [
+            NavigationDestination(icon: Icon(Icons.home_rounded), label: 'Home'),
+            NavigationDestination(icon: Icon(Icons.mic_rounded), label: 'Record'),
+            NavigationDestination(icon: Icon(Icons.timeline_rounded), label: 'Report'),
+            NavigationDestination(icon: Icon(Icons.settings_rounded), label: 'Settings'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class HomeScreen extends StatelessWidget {
+  final VoidCallback onStart;
+  const HomeScreen({super.key, required this.onStart});
+
+  @override
+  Widget build(BuildContext context) {
+    return AppPage(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 8),
+          const Text('LifeCheck', style: TextStyle(color: AppColors.white, fontSize: 28, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 16),
+          const HeroSleepCard(),
+          const SizedBox(height: 14),
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text('Graph color preview', style: TextStyle(color: AppColors.white, fontWeight: FontWeight.w800)),
+                SizedBox(height: 8),
+                SizedBox(height: 120, child: SoundTimelineGraph(points: [], segments: [], durationSeconds: 60)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          PrimaryButton(text: 'Start Sleep Check', icon: Icons.mic_rounded, onPressed: onStart),
+          const SizedBox(height: 10),
+          const Text(
+            'รุ่นนี้ยังไม่มี playback/clip system เพื่อเน้นความเสถียรก่อน',
+            style: TextStyle(color: AppColors.muted, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class HeroSleepCard extends StatelessWidget {
+  const HeroSleepCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 240,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(28),
+        gradient: const LinearGradient(colors: [Color(0xFF102A54), Color(0xFF071426), Color(0xFF130F2B)]),
+      ),
+      child: ClipRRect(borderRadius: BorderRadius.circular(28), child: CustomPaint(painter: SleepingHeroPainter())),
+    );
+  }
+}
+
+class SleepingHeroPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawCircle(Offset(size.width - 44, 44), 34, Paint()..color = AppColors.blue.withOpacity(0.20));
+    canvas.drawCircle(Offset(size.width - 32, 36), 30, Paint()..color = const Color(0xFF071426));
+    final starPaint = Paint()..color = AppColors.white.withOpacity(0.40);
+    for (final p in [Offset(size.width * 0.2, 30), Offset(size.width * 0.45, 24), Offset(size.width * 0.7, 72)]) {
+      canvas.drawCircle(p, 1.4, starPaint);
+    }
+
+    final bedY = size.height * 0.62;
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(20, bedY, size.width - 40, 50), const Radius.circular(24)), Paint()..color = AppColors.white.withOpacity(0.10));
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(40, bedY - 26, 92, 34), const Radius.circular(16)), Paint()..color = AppColors.white.withOpacity(0.85));
+    canvas.drawCircle(Offset(104, bedY - 10), 18, Paint()..color = const Color(0xFFE8B99E));
+    final hair = Paint()
+      ..color = const Color(0xFF1C1720)
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = 9;
+    canvas.drawArc(Rect.fromCircle(center: Offset(98, bedY - 14), radius: 20), math.pi * 0.75, math.pi * 1.35, false, hair);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(70, bedY - 4, size.width * 0.62, 62), const Radius.circular(30)),
+      Paint()
+        ..shader = const LinearGradient(colors: [Color(0xFF2C6DF2), Color(0xFF7C5CFF)]).createShader(Rect.fromLTWH(0, 0, size.width, 60)),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class RecordingScreen extends StatefulWidget {
+  final int startToken;
+  final ValueChanged<SleepRecordingSession> onSessionSaved;
+  final VoidCallback onViewReport;
+  const RecordingScreen({super.key, required this.startToken, required this.onSessionSaved, required this.onViewReport});
+
+  @override
+  State<RecordingScreen> createState() => _RecordingScreenState();
+}
+
+class _RecordingScreenState extends State<RecordingScreen> {
+  final AudioRecorder _recorder = AudioRecorder();
+  Timer? _timer;
+  String? _recordingPath;
+  int _seconds = 0;
+  bool _isRecording = false;
+  bool _isAnalyzing = false;
+  String? _error;
+  int _lastToken = 0;
+  DateTime? _startedAt;
+
+  @override
+  void didUpdateWidget(covariant RecordingScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.startToken != 0 && widget.startToken != _lastToken) {
+      _lastToken = widget.startToken;
+      _startRecording();
+    }
+  }
+
+  Future<void> _startRecording() async {
+    _timer?.cancel();
+    setState(() {
+      _isRecording = false;
+      _isAnalyzing = false;
+      _seconds = 0;
+      _error = null;
+      _recordingPath = null;
+      _startedAt = null;
+    });
+    try {
+      if (!await _recorder.hasPermission()) {
+        setState(() => _error = 'ยังไม่ได้อนุญาตไมโครโฟน');
+        return;
+      }
+      final dir = await getApplicationDocumentsDirectory();
+      final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').replaceAll('.', '-');
+      final path = '${dir.path}/lifecheck_v079_$stamp.wav';
+      await _recorder.start(
+        const RecordConfig(encoder: AudioEncoder.wav, sampleRate: 16000, bitRate: 128000, numChannels: 1),
+        path: path,
+      );
+      if (!mounted) return;
+      setState(() {
+        _recordingPath = path;
+        _startedAt = DateTime.now();
+        _isRecording = true;
+      });
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _seconds++);
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Recording error: $e');
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    if (!_isRecording) return;
+    _timer?.cancel();
+    setState(() {
+      _isRecording = false;
+      _isAnalyzing = true;
+    });
+    try {
+      final path = await _recorder.stop() ?? _recordingPath;
+      if (path == null || _startedAt == null) {
+        setState(() {
+          _isAnalyzing = false;
+          _error = 'No recording path';
+        });
+        return;
+      }
+      final result = _analyzeWav(path, _seconds);
+      final segments = result.segments;
+      final session = SleepRecordingSession(
+        startedAt: _startedAt!,
+        endedAt: DateTime.now(),
+        durationSeconds: _seconds,
+        speech: segments.where((e) => e.type == SoundType.speech).length,
+        possibleSnore: segments.where((e) => e.type == SoundType.possibleSnore).length,
+        impact: segments.where((e) => e.type == SoundType.impact).length,
+        unknown: segments.where((e) => e.type == SoundType.unknown).length,
+        avgDbfs: result.avgDbfs,
+        peakDbfs: result.peakDbfs,
+        analysisNote: result.note,
+        graphPoints: result.graphPoints,
+        segments: segments,
+      );
+      await SleepSessionStore.append(session);
+      if (!mounted) return;
+      setState(() => _isAnalyzing = false);
+      widget.onSessionSaved(session);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isAnalyzing = false;
+          _error = 'Stop/analyze error: $e';
+        });
+      }
+    }
+  }
+
+  AudioAnalysisResult _analyzeWav(String path, int durationSec) {
+    final f = File(path);
+    if (!f.existsSync()) {
+      return const AudioAnalysisResult(avgDbfs: -160, peakDbfs: -160, note: 'file not found', graphPoints: [], segments: []);
+    }
+    final bytes = f.readAsBytesSync();
+    if (bytes.length < 44) {
+      return const AudioAnalysisResult(avgDbfs: -160, peakDbfs: -160, note: 'wav too short', graphPoints: [], segments: []);
+    }
+
+    final info = _readWavInfo(bytes);
+    if (info == null) {
+      return const AudioAnalysisResult(avgDbfs: -160, peakDbfs: -160, note: 'unsupported wav', graphPoints: [], segments: []);
+    }
+    final data = bytes.sublist(info.dataStart, info.dataStart + info.dataSize);
+    final bd = ByteData.sublistView(Uint8List.fromList(data));
+
+    double toDb(double linear) => linear <= 0 ? -160.0 : 20 * math.log(linear) / math.ln10;
+    const blockMs = 100;
+    final framesPerBlock = math.max(1, info.sampleRate * blockMs ~/ 1000);
+    final totalFrames = info.dataSize ~/ info.bytesPerFrame;
+    final blockCount = math.max(1, (totalFrames / framesPerBlock).ceil());
+
+    final rms = <double>[];
+    final peak = <double>[];
+    for (var b = 0; b < blockCount; b++) {
+      final start = b * framesPerBlock;
+      final end = math.min(totalFrames, start + framesPerBlock);
+      double sumSq = 0;
+      double maxAbs = 0;
+      int c = 0;
+      for (var frame = start; frame < end; frame += 2) {
+        final off = frame * info.bytesPerFrame;
+        if (off + 2 > data.length) break;
+        final v = bd.getInt16(off, Endian.little) / 32768.0;
+        final a = v.abs();
+        if (a > maxAbs) maxAbs = a;
+        sumSq += a * a;
+        c++;
+      }
+      if (c == 0) {
+        rms.add(-160);
+        peak.add(-160);
+      } else {
+        rms.add(toDb(math.sqrt(sumSq / c)));
+        peak.add(toDb(maxAbs));
+      }
+    }
+
+    final sorted = rms.where((e) => e > -120).toList()..sort();
+    final floor = sorted.isEmpty ? -75.0 : sorted[(sorted.length * 0.2).floor().clamp(0, sorted.length - 1)];
+    final activation = math.max(-58.0, floor + 7.0);
+
+    final segments = <SleepEventSegment>[];
+    int i = 0;
+    int id = 1;
+    while (i < blockCount) {
+      if (rms[i] < activation) {
+        i++;
+        continue;
+      }
+      final s = i;
+      int e = i;
+      while (e + 1 < blockCount && rms[e + 1] >= activation - 1.5) {
+        e++;
+      }
+      final dur = (e - s + 1) * 0.1;
+      double segAvg = -160;
+      double segPeak = -160;
+      int n = 0;
+      double sum = 0;
+      for (int k = s; k <= e; k++) {
+        sum += rms[k];
+        n++;
+        if (peak[k] > segPeak) segPeak = peak[k];
+      }
+      if (n > 0) segAvg = sum / n;
+      final type = _classifyStable(segAvg: segAvg, segPeak: segPeak, durationSec: dur);
+      segments.add(SleepEventSegment(
+        id: id++,
+        startSeconds: (s * 0.1).floor(),
+        endSeconds: math.max((s * 0.1).floor() + 1, (e * 0.1).ceil()),
+        type: type,
+        avgDbfs: segAvg,
+        peakDbfs: segPeak,
+        detail: 'stable-rule floor=${floor.toStringAsFixed(1)} activation=${activation.toStringAsFixed(1)} duration=${dur.toStringAsFixed(1)}',
+      ));
+      i = e + 1;
+    }
+
+    final points = <SleepGraphPoint>[];
+    for (int b = 0; b < blockCount; b += 10) {
+      final end = math.min(blockCount, b + 10);
+      double p = -160;
+      double s = 0;
+      int c = 0;
+      for (int k = b; k < end; k++) {
+        s += rms[k];
+        if (peak[k] > p) p = peak[k];
+        c++;
+      }
+      final sec = (b * 0.1).floor();
+      points.add(SleepGraphPoint(
+        offsetSeconds: sec,
+        avgDbfs: c == 0 ? -160 : s / c,
+        peakDbfs: p,
+        type: _typeAt(sec, segments),
+      ));
+    }
+
+    final avg = sorted.isEmpty ? -160 : sorted.reduce((a, b) => a + b) / sorted.length;
+    final pk = peak.isEmpty ? -160 : peak.reduce(math.max);
+    return AudioAnalysisResult(
+      avgDbfs: avg,
+      peakDbfs: pk,
+      note: 'v079 stable floor=${floor.toStringAsFixed(1)} activation=${activation.toStringAsFixed(1)} events=${segments.length}',
+      graphPoints: points,
+      segments: segments,
+    );
+  }
+
+  WavInfo? _readWavInfo(Uint8List bytes) {
+    final d = ByteData.sublistView(bytes);
+    if (String.fromCharCodes(bytes.sublist(0, 4)) != 'RIFF' || String.fromCharCodes(bytes.sublist(8, 12)) != 'WAVE') return null;
+    int off = 12;
+    int? sampleRate;
+    int? channels;
+    int? bits;
+    int? dataStart;
+    int? dataSize;
+    while (off + 8 <= bytes.length) {
+      final id = String.fromCharCodes(bytes.sublist(off, off + 4));
+      final size = d.getUint32(off + 4, Endian.little);
+      final start = off + 8;
+      if (id == 'fmt ' && start + 16 <= bytes.length) {
+        channels = d.getUint16(start + 2, Endian.little);
+        sampleRate = d.getUint32(start + 4, Endian.little);
+        bits = d.getUint16(start + 14, Endian.little);
+      }
+      if (id == 'data') {
+        dataStart = start;
+        dataSize = math.min(size, bytes.length - start);
+        break;
+      }
+      off = start + size + (size.isOdd ? 1 : 0);
+    }
+    if (sampleRate == null || channels == null || bits != 16 || dataStart == null || dataSize == null) return null;
+    return WavInfo(
+      sampleRate: sampleRate,
+      channels: channels,
+      bitsPerSample: bits,
+      dataStart: dataStart,
+      dataSize: dataSize,
+      bytesPerFrame: channels * (bits ~/ 8),
+    );
+  }
+
+  SoundType _classifyStable({required double segAvg, required double segPeak, required double durationSec}) {
+    if (durationSec <= 0.45 && segPeak >= -14) return SoundType.impact;
+    // Tightened snore gate to reduce false positives.
+    if (durationSec >= 1.0 && durationSec <= 7.0 && segAvg >= -52 && segAvg <= -22 && segPeak <= -6) return SoundType.possibleSnore;
+    if (durationSec >= 0.35 && durationSec <= 12.0 && segAvg >= -60) return SoundType.speech;
+    return SoundType.unknown;
+  }
+
+  SoundType _typeAt(int sec, List<SleepEventSegment> segs) {
+    for (final s in segs) {
+      if (sec >= s.startSeconds && sec <= s.endSeconds) return s.type;
+    }
+    return SoundType.background;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = _error ?? (_isAnalyzing ? 'กำลังวิเคราะห์ไฟล์เสียง...' : (_isRecording ? 'Recording...' : 'Ready'));
+    return AppPage(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Sleep Recording', style: TextStyle(color: AppColors.white, fontSize: 24, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 20),
+        Center(child: Text(formatDuration(_seconds), style: const TextStyle(color: AppColors.white, fontSize: 44, fontWeight: FontWeight.w900))),
+        const SizedBox(height: 8),
+        Text(status, style: TextStyle(color: _error == null ? AppColors.muted : AppColors.red)),
+        const SizedBox(height: 20),
+        Row(children: [
+          Expanded(
+            child: SecondaryButton(
+              text: _isRecording ? 'Stop Recording' : 'Restart',
+              icon: _isRecording ? Icons.stop_rounded : Icons.refresh_rounded,
+              onPressed: _isAnalyzing ? null : (_isRecording ? _stopRecording : _startRecording),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: PrimaryButton(text: 'View Report', icon: Icons.timeline_rounded, onPressed: widget.onViewReport)),
+        ]),
+      ]),
+    );
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _recorder.dispose();
+    super.dispose();
+  }
+}
+
+class ReportScreen extends StatelessWidget {
+  final SleepRecordingSession? session;
+  final VoidCallback onRecordAgain;
+  const ReportScreen({super.key, required this.session, required this.onRecordAgain});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = session;
+    if (s == null) {
+      return AppPage(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Report', style: TextStyle(color: AppColors.white, fontSize: 24, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 16),
+          const AppCard(child: Text('ยังไม่มี session, กด Record ก่อน', style: TextStyle(color: AppColors.white))),
+          const SizedBox(height: 14),
+          PrimaryButton(text: 'Start Recording', icon: Icons.mic_rounded, onPressed: onRecordAgain),
+        ]),
+      );
+    }
+    return AppPage(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Morning Report', style: TextStyle(color: AppColors.white, fontSize: 24, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 10),
+        LegendRow(),
+        const SizedBox(height: 8),
+        SizedBox(height: 170, child: SoundTimelineGraph(points: s.graphPoints, segments: s.segments, durationSeconds: s.durationSeconds)),
+        const SizedBox(height: 12),
+        AppCard(
+          child: Column(children: [
+            SummaryRow(icon: Icons.record_voice_over_rounded, color: AppColors.cyan, label: 'Speech-like', value: s.speech.toString()),
+            SummaryRow(icon: Icons.graphic_eq_rounded, color: AppColors.red, label: 'Possible snore', value: s.possibleSnore.toString()),
+            SummaryRow(icon: Icons.help_outline_rounded, color: AppColors.orange, label: 'Unknown', value: s.unknown.toString()),
+            SummaryRow(icon: Icons.flash_on_rounded, color: AppColors.purple, label: 'Impact', value: s.impact.toString()),
+            SummaryRow(icon: Icons.nights_stay_rounded, color: AppColors.greyEvent, label: 'Quiet', value: '-'),
+          ]),
+        ),
+        const SizedBox(height: 12),
+        ...s.segments.map((e) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: AppCard(
+                borderColor: colorForType(e.type).withOpacity(0.32),
+                child: Row(
+                  children: [
+                    Icon(iconForType(e.type), color: colorForType(e.type)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${labelForType(e.type)}  ${formatDuration(e.startSeconds)}-${formatDuration(e.endSeconds)}  peak ${e.peakDbfs.toStringAsFixed(1)} dBFS',
+                        style: const TextStyle(color: AppColors.white, fontSize: 12.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )),
+      ]),
+    );
+  }
+}
+
+class SettingsScreen extends StatelessWidget {
+  final VoidCallback onRecordAgain;
+  const SettingsScreen({super.key, required this.onRecordAgain});
+
+  @override
+  Widget build(BuildContext context) {
+    return AppPage(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Settings', style: TextStyle(color: AppColors.white, fontSize: 24, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 12),
+        const AppCard(child: Text('รุ่นนี้เน้น build ผ่าน + เห็นภาพ/กราฟชัดเจนก่อน', style: TextStyle(color: AppColors.white))),
+        const SizedBox(height: 14),
+        PrimaryButton(text: 'Start Recording', icon: Icons.mic_rounded, onPressed: onRecordAgain),
+      ]),
+    );
+  }
+}
+
+class AppPage extends StatelessWidget {
+  final Widget child;
+  const AppPage({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 26),
+        child: child,
+      ),
+    );
+  }
+}
+
+class AppCard extends StatelessWidget {
+  final Widget child;
+  final Color? borderColor;
+  const AppCard({super.key, required this.child, this.borderColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.card.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderColor ?? AppColors.line),
+      ),
+      child: child,
+    );
+  }
+}
+
+class PrimaryButton extends StatelessWidget {
+  final String text;
+  final IconData icon;
+  final VoidCallback? onPressed;
+  const PrimaryButton({super.key, required this.text, required this.icon, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      width: double.infinity,
+      child: FilledButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon),
+        label: Text(text),
+        style: FilledButton.styleFrom(backgroundColor: AppColors.blue, foregroundColor: AppColors.white),
+      ),
+    );
+  }
+}
+
+class SecondaryButton extends StatelessWidget {
+  final String text;
+  final IconData icon;
+  final VoidCallback? onPressed;
+  const SecondaryButton({super.key, required this.text, required this.icon, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon),
+        label: Text(text),
+        style: OutlinedButton.styleFrom(foregroundColor: AppColors.white, side: const BorderSide(color: AppColors.blue)),
+      ),
+    );
+  }
+}
+
+class SummaryRow extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String label;
+  final String value;
+  const SummaryRow({super.key, required this.icon, required this.color, required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 8),
+          Expanded(child: Text(label, style: const TextStyle(color: AppColors.white))),
+          Text(value, style: TextStyle(color: color, fontWeight: FontWeight.w900)),
+        ],
+      ),
+    );
+  }
+}
+
+class LegendRow extends StatelessWidget {
+  const LegendRow({super.key});
+
+  Widget _item(Color c, String t) => Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 9, height: 9, decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+        const SizedBox(width: 5),
+        Text(t, style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+      ]);
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 8,
+      children: [
+        _item(AppColors.cyan, 'Speech'),
+        _item(AppColors.red, 'Snore?'),
+        _item(AppColors.orange, 'Unknown'),
+        _item(AppColors.purple, 'Impact'),
+        _item(AppColors.greyEvent, 'Quiet'),
+      ],
+    );
+  }
+}
+
+class SoundTimelineGraph extends StatelessWidget {
+  final List<SleepGraphPoint> points;
+  final List<SleepEventSegment> segments;
+  final int durationSeconds;
+  const SoundTimelineGraph({super.key, required this.points, required this.segments, required this.durationSeconds});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(painter: TimelinePainter(points: points, segments: segments, durationSeconds: durationSeconds));
+  }
+}
+
+class TimelinePainter extends CustomPainter {
+  final List<SleepGraphPoint> points;
+  final List<SleepEventSegment> segments;
+  final int durationSeconds;
+  TimelinePainter({required this.points, required this.segments, required this.durationSeconds});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final left = 28.0;
+    final right = size.width - 8;
+    final top = 10.0;
+    final bottom = size.height - 18;
+    final w = math.max(1.0, right - left);
+    final h = math.max(1.0, bottom - top);
+
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(16)),
+      Paint()..color = AppColors.navy2.withOpacity(0.85),
+    );
+
+    final data = points.isEmpty ? _demo(durationSeconds <= 0 ? 60 : durationSeconds) : points;
+    final dur = math.max(1, durationSeconds <= 0 ? data.last.offsetSeconds : durationSeconds);
+    final bw = math.max(2.0, w / math.max(1, data.length) * 0.75);
+
+    for (final p in data) {
+      final x = left + (p.offsetSeconds / dur) * w;
+      final y = _dbToY(p.peakDbfs, top, h);
+      final c = colorForType(p.type).withOpacity(p.type == SoundType.background ? 0.45 : 0.95);
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(x, y, bw, bottom - y), const Radius.circular(3)), Paint()..color = c);
+    }
+
+    for (final s in segments) {
+      final x1 = left + (s.startSeconds / dur) * w;
+      final x2 = left + (s.endSeconds / dur) * w;
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTRB(x1, top, math.max(x1 + 4, x2), top + 8), const Radius.circular(4)), Paint()..color = colorForType(s.type));
+    }
+  }
+
+  List<SleepGraphPoint> _demo(int d) {
+    final out = <SleepGraphPoint>[];
+    for (int i = 0; i <= d; i += 2) {
+      var db = -76.0 + math.sin(i * 0.5) * 2;
+      var type = SoundType.background;
+      if (i >= d * 0.2 && i <= d * 0.3) {
+        db = -34 + math.sin(i).abs() * 7;
+        type = SoundType.speech;
+      } else if (i >= d * 0.46 && i <= d * 0.58) {
+        db = -42 + math.sin(i * 0.7).abs() * 8;
+        type = SoundType.possibleSnore;
+      } else if (i >= d * 0.66 && i <= d * 0.72) {
+        db = -12;
+        type = SoundType.impact;
+      } else if (i >= d * 0.80 && i <= d * 0.9) {
+        db = -47 + math.sin(i * 0.8).abs() * 7;
+        type = SoundType.unknown;
+      }
+      out.add(SleepGraphPoint(offsetSeconds: i, avgDbfs: db - 3, peakDbfs: db, type: type));
+    }
+    return out;
+  }
+
+  double _dbToY(double db, double top, double h) {
+    final c = db.clamp(-80.0, 0.0).toDouble();
+    final n = (c + 80) / 80.0;
+    return top + h * (1 - n);
+  }
+
+  @override
+  bool shouldRepaint(covariant TimelinePainter oldDelegate) => true;
+}
+
+String formatDuration(int seconds) {
+  final h = seconds ~/ 3600;
+  final m = (seconds % 3600) ~/ 60;
+  final s = seconds % 60;
+  if (h > 0) {
+    return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+  return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+}
